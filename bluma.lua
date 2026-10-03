@@ -502,20 +502,43 @@ local function handleAdminLocal(username, action, arg)
         return true, ("ChatBox username='%s' | normalizado='%s' | owner=%s | coreID=%d | voice=%s\n%s"):format(
             tostring(username), normalizeName(username), tostring(isOwner(username)), os.getComputerID(), runtime.voice_id, machineSummary(isOwner(username)))
     end
-    if action=="VOICE_STATUS" then return true,"Voz fixa atual: "..runtime.voice_id.." | ativa="..tostring(runtime.voice_enabled) end
-    if action=="VOICE_ON" or action=="VOICE_OFF" or action=="VOICE_RESET" or action=="VOICE_SET" then
-        if not isOwner(username) then return true,"Esse ajuste e restrito ao operador." end
-        if action=="VOICE_ON" then runtime.voice_enabled=true; saveRuntime(); return true,"Voz da BLUMA ativada." end
-        if action=="VOICE_OFF" then runtime.voice_enabled=false; saveRuntime(); return true,"Voz da BLUMA desativada." end
-        if action=="VOICE_RESET" then runtime.voice_id=DEFAULT_VOICE_ID; saveRuntime(); return true,"Voz restaurada para a referencia fixa padrao." end
-        runtime.voice_id=arg; saveRuntime(); return true,"Nova voz fixa salva. Nao e necessario editar config.lua." end
+
+    if action=="VOICE_STATUS" then
+        return true,"Voz fixa atual: "..runtime.voice_id.." | ativa="..tostring(runtime.voice_enabled)
     end
+
+    if action=="VOICE_ON" or action=="VOICE_OFF" or action=="VOICE_RESET" or action=="VOICE_SET" then
+        if not isOwner(username) then
+            return true,"Esse ajuste e restrito ao operador."
+        end
+
+        if action=="VOICE_ON" then
+            runtime.voice_enabled=true
+            saveRuntime()
+            return true,"Voz da BLUMA ativada."
+        end
+
+        if action=="VOICE_OFF" then
+            runtime.voice_enabled=false
+            saveRuntime()
+            return true,"Voz da BLUMA desativada."
+        end
+
+        if action=="VOICE_RESET" then
+            runtime.voice_id=DEFAULT_VOICE_ID
+            saveRuntime()
+            return true,"Voz restaurada para a referencia fixa padrao."
+        end
+
+        if action=="VOICE_SET" then
+            runtime.voice_id=arg
+            saveRuntime()
+            return true,"Nova voz fixa salva. Nao e necessario editar config.lua."
+        end
+    end
+
     return false
 end
-
-local function processMessage(username, message)
-    state.lastUser=username; state.lastMessage=message; state.thinking=true; redraw(); safeSound("minecraft:block.amethyst_block.chime",0.2,1.35)
-
     local action,arg=localIntent(message)
     local handled,response=false,nil
 
