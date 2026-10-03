@@ -1,92 +1,80 @@
 -- ============================================================
--- BLUMA CORE v1
--- CC:Tweaked 1.20.1 + Advanced Peripherals 0.7
--- Chat + Groq + Fish TTS + Monitor + Rednet + Machine control
+-- BLUMA CORE v4
+-- CC:Tweaked 1.20.1 + Advanced Peripherals Chat Box
+--
+-- Recursos:
+--   - Owner case-insensitive: Murillopip
+--   - Groq (conversa)
+--   - Fish Audio (voz)
+--   - Voz fixa por reference_id persistente
+--   - Responde no idioma da mensagem
+--   - Chat privado do owner por padrao
+--   - Modo publico explicito
+--   - Rednet + heartbeat real
+--   - START / STOP / PAUSE / RESUME da mineradora
+--   - ACK real: nao inventa que executou
+--   - Dashboard animado no Advanced Monitor
+--   - Boot/login animation
+--   - ASCII/portrait CC-native
+--   - Watchdog de maquinas
+--   - Historico por jogador
+--   - Runtime persistente sem editar config.lua
 -- ============================================================
 
-local okConfig, CONFIG = pcall(require, "config")
-if not okConfig then error("Nao foi possivel carregar config.lua: " .. tostring(CONFIG), 0) end
+local CONFIG = require("config")
 
-CONFIG.GROQ_URL = CONFIG.GROQ_URL or "https://api.groq.com/openai/v1/chat/completions"
-CONFIG.FISH_URL = CONFIG.FISH_URL or "https://api.fish.audio/v1/tts"
-CONFIG.GROQ_MODEL = CONFIG.GROQ_MODEL or "openai/gpt-oss-20b"
-CONFIG.FISH_MODEL = CONFIG.FISH_MODEL or "s2.1-pro-free"
-CONFIG.SPEAKER_VOLUME = CONFIG.SPEAKER_VOLUME or 2.25
-CONFIG.AUDIO_PEAK = CONFIG.AUDIO_PEAK or 100
+-- ---------------------------
+-- IDENTIDADE
+-- ---------------------------
 
-local OWNER_CANON = "murillopip"
-local MACHINE_PROTOCOL = "bluma.machine.v1"
-local LEGACY_MINER_PROTOCOL = "miner64"
+local OWNER = "Murillopip"
+local CORE_PROTOCOL = "BLUMA"
+local MACHINE_ID = "MINER-01"
 local HEARTBEAT_TIMEOUT = 12
-local ACK_TIMEOUT = 5
+
+local GROQ_URL = "https://api.groq.com/openai/v1/chat/completions"
+local GROQ_MODEL = "openai/gpt-oss-20b"
+
+local FISH_URL = "https://api.fish.audio/v1/tts"
+local FISH_MODEL = "s2.1-pro-free"
+
+-- Voz fixa publica mostrada na documentacao da Fish.
+-- Pode ser trocada PELO CHAT e fica salva em .bluma_runtime.
+-- Ex.: "Bluma voz 0123456789abcdef..."
 local DEFAULT_VOICE_ID = "933563129e564b19a115bedd57b7406a"
-local RUNTIME_FILE = ".bluma_runtime"
+
+-- ---------------------------
+-- PERIFERICOS
+-- ---------------------------
 
 local monitor = peripheral.find("monitor")
 local speaker = peripheral.find("speaker")
 local chatBox = peripheral.find("chatBox")
 local modem = peripheral.find("modem")
 
-if not speaker then error("Speaker nao encontrado.", 0) end
-if not chatBox then error("Chat Box nao encontrada.", 0) end
-if not modem then error("Modem nao encontrado.", 0) end
+if not monitor then error("BLUMA: monitor nao encontrado") end
+if not speaker then error("BLUMA: speaker nao encontrado") end
+if not chatBox then error("BLUMA: chatBox nao encontrada") end
+if not modem then error("BLUMA: modem nao encontrado") end
 
 local modemName = peripheral.getName(modem)
-if not rednet.isOpen(modemName) then rednet.open(modemName) end
-pcall(function() rednet.host(MACHINE_PROTOCOL, "bluma-core-" .. os.getComputerID()) end)
-
-if monitor then
-    monitor.setTextScale(0.5)
-    monitor.setBackgroundColor(colors.black)
-    monitor.setTextColor(colors.white)
-    monitor.clear()
+if not rednet.isOpen(modemName) then
+    rednet.open(modemName)
 end
 
-local function normalizeName(name)
-    return tostring(name or ""):lower():gsub("%s+", "")
-end
+monitor.setTextScale(0.5)
 
-local function isOwner(username)
-    return normalizeName(username) == OWNER_CANON
-end
+-- ---------------------------
+-- RUNTIME
+-- ---------------------------
 
-local repl = {
-    ["á"]="a",["à"]="a",["ã"]="a",["â"]="a",["ä"]="a",
-    ["é"]="e",["è"]="e",["ê"]="e",["ë"]="e",
-    ["í"]="i",["ì"]="i",["î"]="i",["ï"]="i",
-    ["ó"]="o",["ò"]="o",["õ"]="o",["ô"]="o",["ö"]="o",
-    ["ú"]="u",["ù"]="u",["û"]="u",["ü"]="u",
-    ["ç"]="c",["ñ"]="n",
-    ["Á"]="A",["À"]="A",["Ã"]="A",["Â"]="A",["Ä"]="A",
-    ["É"]="E",["È"]="E",["Ê"]="E",["Ë"]="E",
-    ["Í"]="I",["Ì"]="I",["Î"]="I",["Ï"]="I",
-    ["Ó"]="O",["Ò"]="O",["Õ"]="O",["Ô"]="O",["Ö"]="O",
-    ["Ú"]="U",["Ù"]="U",["Û"]="U",["Ü"]="U",
-    ["Ç"]="C",["Ñ"]="N",
-}
-
-local function ascii(s)
-    s = tostring(s or "")
-    for a,b in pairs(repl) do s = s:gsub(a,b) end
-    return s
-end
-
-local function folded(s)
-    return ascii(tostring(s or "")):lower()
-end
+local RUNTIME_FILE = ".bluma_runtime"
 
 local runtime = {
-    voice_id = DEFAULT_VOICE_ID,
     voice_enabled = true,
+    voice_id = DEFAULT_VOICE_ID,
+    volume = 2.15
 }
-
-local function saveRuntime()
-    local h = fs.open(RUNTIME_FILE, "w")
-    if h then
-        h.write(textutils.serialize(runtime))
-        h.close()
-    end
-end
 
 local function loadRuntime()
     if not fs.exists(RUNTIME_FILE) then return end
@@ -94,540 +82,983 @@ local function loadRuntime()
     if not h then return end
     local raw = h.readAll()
     h.close()
-    local t = textutils.unserialize(raw)
-    if type(t) == "table" then
-        if type(t.voice_id) == "string" and #t.voice_id > 0 then runtime.voice_id = t.voice_id end
-        if type(t.voice_enabled) == "boolean" then runtime.voice_enabled = t.voice_enabled end
+    local data = textutils.unserializeJSON(raw)
+    if type(data) == "table" then
+        if type(data.voice_enabled) == "boolean" then runtime.voice_enabled = data.voice_enabled end
+        if type(data.voice_id) == "string" and data.voice_id ~= "" then runtime.voice_id = data.voice_id end
+        if type(data.volume) == "number" then runtime.volume = data.volume end
     end
 end
+
+local function saveRuntime()
+    local h = fs.open(RUNTIME_FILE, "w")
+    if not h then return false end
+    h.write(textutils.serializeJSON(runtime))
+    h.close()
+    return true
+end
+
 loadRuntime()
 
+-- ---------------------------
+-- ESTADO
+-- ---------------------------
+
 local state = {
-    thinking = false,
-    speaking = false,
-    lastUser = nil,
-    lastMessage = nil,
-    lastResponse = nil,
-    lastLegacyMiner = nil,
+    mode = "BOOT",
+    lastUser = "-",
+    lastMessage = "",
+    lastResponse = "",
     machines = {},
     history = {},
     pending = {},
-    requestSeq = 0,
+    ttsQueue = {},
+    bootedAt = os.epoch("utc"),
+    spinner = 1,
+    activity = "INITIALIZING",
+    requestCounter = 0,
+    error = nil
 }
 
-local function nowMs() return os.epoch("utc") end
-local function nowSec() return nowMs() / 1000 end
+-- ---------------------------
+-- UTIL
+-- ---------------------------
 
-local function machineOnline(m)
-    return m and (nowSec() - (m.lastSeen or 0) <= HEARTBEAT_TIMEOUT)
+local function trim(s)
+    s = tostring(s or "")
+    return (s:gsub("^%s+", ""):gsub("%s+$", ""))
 end
 
-local function inventoryShort(items)
-    if type(items) ~= "table" then return nil end
-    local parts = {}
-    for name,count in pairs(items) do
-        parts[#parts+1] = tostring(count) .. "x " .. tostring(name):gsub("minecraft:", "")
-        if #parts >= 5 then break end
-    end
-    if #parts == 0 then return nil end
-    return table.concat(parts, ", ")
+local function normalizeName(s)
+    return string.lower(trim(s))
 end
 
-local function machineSummary(private)
-    local ids = {}
-    for id in pairs(state.machines) do ids[#ids+1] = id end
-    table.sort(ids)
-    if #ids == 0 then return "Nenhuma maquina BLUMA enviou telemetria ainda." end
+local function isOwner(username)
+    return normalizeName(username) == normalizeName(OWNER)
+end
 
-    local out = {}
-    for _,id in ipairs(ids) do
-        local m = state.machines[id]
-        local online = machineOnline(m)
-        local line = id .. " = " .. (online and tostring(m.state or "UNKNOWN") or "OFFLINE")
-        if private and online then
-            if m.fuel ~= nil then line = line .. " | fuel=" .. tostring(m.fuel) end
-            if m.slotsUsed ~= nil then line = line .. " | slots=" .. tostring(m.slotsUsed) .. "/16" end
-            if m.position and m.position.x then
-                line = line .. (" | xyz=%.0f %.0f %.0f"):format(m.position.x, m.position.y, m.position.z)
-            end
-            local inv = inventoryShort(m.items)
-            if inv then line = line .. " | inv=" .. inv end
-            if m.lastError then line = line .. " | erro=" .. tostring(m.lastError) end
-        end
-        out[#out+1] = line
-    end
-    return table.concat(out, "\n")
+local function nowSeconds()
+    return os.epoch("utc") / 1000
+end
+
+local function safeCall(fn, ...)
+    local ok, a, b, c = pcall(fn, ...)
+    if not ok then return nil, a end
+    return a, b, c
+end
+
+local function contains(haystack, needle)
+    return string.find(string.lower(tostring(haystack or "")), string.lower(needle), 1, true) ~= nil
+end
+
+local function clamp(v, a, b)
+    if v < a then return a end
+    if v > b then return b end
+    return v
+end
+
+local function padRight(s, n)
+    s = tostring(s or "")
+    if #s >= n then return s:sub(1, n) end
+    return s .. string.rep(" ", n - #s)
+end
+
+local function centerText(s, w)
+    s = tostring(s or "")
+    if #s >= w then return s:sub(1, w) end
+    local left = math.floor((w - #s) / 2)
+    return string.rep(" ", left) .. s
+end
+
+local function sanitizeDisplay(s)
+    s = tostring(s or "")
+    local map = {
+        ["á"]="a",["à"]="a",["ã"]="a",["â"]="a",["ä"]="a",
+        ["é"]="e",["è"]="e",["ê"]="e",["ë"]="e",
+        ["í"]="i",["ì"]="i",["î"]="i",["ï"]="i",
+        ["ó"]="o",["ò"]="o",["õ"]="o",["ô"]="o",["ö"]="o",
+        ["ú"]="u",["ù"]="u",["û"]="u",["ü"]="u",
+        ["ç"]="c",
+        ["Á"]="A",["À"]="A",["Ã"]="A",["Â"]="A",["Ä"]="A",
+        ["É"]="E",["È"]="E",["Ê"]="E",["Ë"]="E",
+        ["Í"]="I",["Ì"]="I",["Î"]="I",["Ï"]="I",
+        ["Ó"]="O",["Ò"]="O",["Õ"]="O",["Ô"]="O",["Ö"]="O",
+        ["Ú"]="U",["Ù"]="U",["Û"]="U",["Ü"]="U",
+        ["Ç"]="C"
+    }
+    for a, b in pairs(map) do s = s:gsub(a, b) end
+    s = s:gsub("[^\32-\126\n]", "?")
+    return s
 end
 
 local function wrapText(text, width)
-    local lines, line = {}, ""
-    for word in tostring(text or ""):gmatch("%S+") do
-        if #line + #word + (line == "" and 0 or 1) > width then
-            if line ~= "" then lines[#lines+1] = line end
-            line = word
-        else
-            line = line == "" and word or (line .. " " .. word)
+    text = sanitizeDisplay(text)
+    local out = {}
+    for paragraph in (text .. "\n"):gmatch("(.-)\n") do
+        local line = ""
+        for word in paragraph:gmatch("%S+") do
+            if #line == 0 then
+                line = word
+            elseif #line + #word + 1 <= width then
+                line = line .. " " .. word
+            else
+                table.insert(out, line)
+                line = word
+            end
         end
+        if line ~= "" then table.insert(out, line) end
+        if paragraph == "" then table.insert(out, "") end
     end
-    if line ~= "" then lines[#lines+1] = line end
-    return lines
-end
-
-local function redraw()
-    if not monitor then return end
-    local w,h = monitor.getSize()
-    monitor.setBackgroundColor(colors.black)
-    monitor.clear()
-
-    monitor.setTextColor(colors.cyan)
-    monitor.setCursorPos(2,1)
-    monitor.write("BLUMA // CORE")
-    monitor.setTextColor(colors.gray)
-    monitor.setCursorPos(2,2)
-    monitor.write("AI + TELEMETRY + CONTROL")
-    monitor.setCursorPos(1,3)
-    monitor.write(string.rep("-", w))
-
-    monitor.setCursorPos(2,5)
-    if state.thinking then
-        monitor.setTextColor(colors.orange); monitor.write("STATUS: PROCESSANDO")
-    elseif state.speaking then
-        monitor.setTextColor(colors.lime); monitor.write("STATUS: FALANDO")
-    else
-        monitor.setTextColor(colors.green); monitor.write("STATUS: ONLINE")
-    end
-
-    monitor.setTextColor(colors.lightGray)
-    monitor.setCursorPos(2,7)
-    monitor.write("OWNER: Murillopip")
-
-    local online,total = 0,0
-    for _,m in pairs(state.machines) do total=total+1; if machineOnline(m) then online=online+1 end end
-    monitor.setCursorPos(2,8)
-    monitor.write(("MAQUINAS: %d ONLINE / %d TOTAL"):format(online,total))
-
-    local y = 10
-    for id,m in pairs(state.machines) do
-        if y >= h-5 then break end
-        monitor.setCursorPos(2,y)
-        monitor.setTextColor(machineOnline(m) and colors.lime or colors.red)
-        monitor.write(ascii(id .. "  " .. (machineOnline(m) and tostring(m.state) or "OFFLINE")))
-        y=y+1
-    end
-
-    if state.lastResponse then
-        y = math.max(y+1, h-6)
-        monitor.setTextColor(colors.cyan)
-        monitor.setCursorPos(2,y)
-        monitor.write("BLUMA:")
-        local lines = wrapText(ascii(state.lastResponse), math.max(10,w-3))
-        monitor.setTextColor(colors.white)
-        for i=1,math.min(#lines,h-y-1) do
-            monitor.setCursorPos(2,y+i)
-            monitor.write(lines[i])
-        end
-    end
+    return out
 end
 
 local function safeSound(name, volume, pitch)
-    pcall(function() speaker.playSound(name, volume, pitch) end)
+    pcall(function()
+        speaker.playSound(name, volume or 0.2, pitch or 1)
+    end)
 end
+
+-- ---------------------------
+-- ASCII / PORTRAIT
+-- ---------------------------
+-- O asset Unicode original enviado pelo usuario fica no pacote como:
+-- bluma_ascii_01.txt
+--
+-- Advanced Monitor do CC:Tweaked nao renderiza Unicode/Braille completo.
+-- O monitor usa esta versao CC-native para nao virar bytes quebrados.
+
+local PORTRAIT = {
+    "          .::::::::::.          ",
+    "       .::------------::.       ",
+    "     .:---..        ..---:.     ",
+    "    :--.                .--:    ",
+    "   :-.      .------.      .-:   ",
+    "  :-.     .-========-.     .-:  ",
+    "  :-     /==  ____  ==\\     -:  ",
+    "  :-    |==  / __ \\  ==|    -:  ",
+    "  :-    |== | /  \\ | ==|    -:  ",
+    "  :-    |== | \\__/ | ==|    -:  ",
+    "  :-     \\== \\____/ ==/     -:  ",
+    "   :-.     '-======-'     .-:   ",
+    "    :--.      /\\        .--:    ",
+    "     ':---.  /  \\   .---:'      ",
+    "       '::---____---::'          ",
+    "          '::::::::'             "
+}
+
+local function portraitLine(index, width)
+    local line = PORTRAIT[index] or ""
+    if #line > width then
+        line = line:sub(1, width)
+    end
+    return line
+end
+
+-- ---------------------------
+-- MONITOR DRAW
+-- ---------------------------
+
+local function clearMonitor(bg)
+    monitor.setBackgroundColor(bg or colors.black)
+    monitor.setTextColor(colors.white)
+    monitor.clear()
+    monitor.setCursorPos(1, 1)
+end
+
+local function writeAt(x, y, text, fg, bg)
+    if bg then monitor.setBackgroundColor(bg) end
+    if fg then monitor.setTextColor(fg) end
+    monitor.setCursorPos(x, y)
+    monitor.write(tostring(text or ""))
+end
+
+local function drawBox(x, y, w, h, title)
+    if w < 4 or h < 3 then return end
+    monitor.setTextColor(colors.gray)
+    writeAt(x, y, "+" .. string.rep("-", w - 2) .. "+", colors.gray, colors.black)
+    for yy = y + 1, y + h - 2 do
+        writeAt(x, yy, "|", colors.gray, colors.black)
+        writeAt(x + w - 1, yy, "|", colors.gray, colors.black)
+    end
+    writeAt(x, y + h - 1, "+" .. string.rep("-", w - 2) .. "+", colors.gray, colors.black)
+    if title and #title > 0 then
+        local t = " " .. title .. " "
+        writeAt(x + 2, y, t:sub(1, math.max(0, w - 4)), colors.cyan, colors.black)
+    end
+end
+
+local function machineOnline(m)
+    return m and (nowSeconds() - (m.lastSeen or 0) <= HEARTBEAT_TIMEOUT)
+end
+
+local function getMachine(id)
+    return state.machines[id]
+end
+
+local function statusWord()
+    if state.error then return "ERROR" end
+    if state.mode == "THINKING" then return "THINKING" end
+    if state.mode == "SPEAKING" then return "SPEAKING" end
+    return "ONLINE"
+end
+
+local function drawDashboard()
+    local w, h = monitor.getSize()
+    clearMonitor(colors.black)
+
+    writeAt(2, 1, "BLUMA // CENTRAL INTELLIGENCE", colors.cyan, colors.black)
+    writeAt(math.max(2, w - 18), 1, "[" .. statusWord() .. "]", state.error and colors.red or colors.lime, colors.black)
+    writeAt(1, 2, string.rep("-", w), colors.gray, colors.black)
+
+    local split = math.floor(w * 0.56)
+    if split < 28 then split = math.floor(w * 0.65) end
+    local leftW = split - 2
+    local rightX = split + 1
+    local rightW = w - rightX
+
+    drawBox(2, 4, leftW, math.max(11, h - 7), "CORE")
+    drawBox(rightX, 4, math.max(4, rightW), math.max(11, h - 7), "BLUMA")
+
+    local y = 6
+    writeAt(4, y, "OWNER", colors.gray)
+    writeAt(15, y, OWNER, colors.white)
+    y = y + 2
+
+    writeAt(4, y, "ACTIVITY", colors.gray)
+    writeAt(15, y, sanitizeDisplay(state.activity), colors.yellow)
+    y = y + 2
+
+    local miner = getMachine(MACHINE_ID)
+    writeAt(4, y, "MINER-01", colors.gray)
+    if machineOnline(miner) then
+        local ms = tostring(miner.state or "UNKNOWN")
+        writeAt(15, y, ms, ms == "RUNNING" and colors.lime or colors.orange)
+    else
+        writeAt(15, y, "OFFLINE", colors.red)
+    end
+    y = y + 1
+
+    if miner and machineOnline(miner) then
+        writeAt(6, y, "fuel: " .. tostring(miner.fuel or "?"), colors.lightGray)
+        y = y + 1
+        writeAt(6, y, "slots: " .. tostring(miner.usedSlots or "?") .. "/16", colors.lightGray)
+        y = y + 1
+        if miner.progress ~= nil then
+            writeAt(6, y, "progress: " .. tostring(miner.progress), colors.lightGray)
+            y = y + 1
+        end
+    end
+
+    y = y + 1
+    writeAt(4, y, "LAST USER", colors.gray)
+    writeAt(15, y, sanitizeDisplay(state.lastUser), colors.white)
+    y = y + 2
+
+    if state.lastResponse ~= "" then
+        writeAt(4, y, "BLUMA", colors.cyan)
+        y = y + 1
+        local lines = wrapText(state.lastResponse, math.max(10, leftW - 6))
+        local maxLines = math.max(0, h - y - 3)
+        for i = 1, math.min(#lines, maxLines) do
+            writeAt(4, y, lines[i], colors.white)
+            y = y + 1
+        end
+    end
+
+    local artWidth = math.max(1, rightW - 4)
+    local artY = 6
+    local scan = (state.spinner % #PORTRAIT) + 1
+    for i = 1, math.min(#PORTRAIT, h - 10) do
+        local color = colors.lightGray
+        if i == scan then color = colors.cyan end
+        writeAt(rightX + 2, artY + i - 1, portraitLine(i, artWidth), color, colors.black)
+    end
+
+    local footerY = h - 2
+    if footerY > 3 then
+        writeAt(2, footerY, "CHAT: diga 'Bluma ...' | ADMIN: status / voz / mineradora", colors.gray, colors.black)
+        local tick = ({".", "..", "...", "...."})[((state.spinner - 1) % 4) + 1]
+        writeAt(math.max(2, w - 14), footerY, "CORE" .. tick, colors.cyan, colors.black)
+    end
+end
+
+local function bootLine(y, label, delay)
+    local w = monitor.getSize()
+    writeAt(3, y, padRight(label, math.max(10, w - 12)), colors.lightGray, colors.black)
+    sleep(delay or 0.10)
+    writeAt(math.max(3, w - 6), y, "OK", colors.lime, colors.black)
+    safeSound("minecraft:block.note_block.hat", 0.08, 1.6)
+end
+
+local function bootAnimation()
+    state.mode = "BOOT"
+    clearMonitor(colors.black)
+    local w, h = monitor.getSize()
+
+    writeAt(1, 2, centerText("BLUMA", w), colors.cyan, colors.black)
+    writeAt(1, 3, centerText("CENTRAL INTELLIGENCE SYSTEM", w), colors.gray, colors.black)
+
+    local startY = 6
+    local steps = {
+        "LOADING CORE",
+        "LOADING CONFIG",
+        "OPENING REDNET",
+        "CHECKING MONITOR",
+        "CHECKING SPEAKER",
+        "CHECKING CHAT LINK",
+        "CHECKING LANGUAGE MODEL",
+        "CHECKING VOICE ENGINE",
+        "INITIALIZING INTERFACE"
+    }
+
+    for i = 1, #steps do
+        if startY + i - 1 < h - 4 then
+            bootLine(startY + i - 1, steps[i], 0.08)
+        end
+    end
+
+    sleep(0.2)
+    clearMonitor(colors.black)
+    writeAt(1, math.max(2, math.floor(h / 2) - 2), centerText("> USUARIO DETECTADO <", w), colors.yellow)
+    sleep(0.25)
+    writeAt(1, math.max(3, math.floor(h / 2)), centerText("AUTHENTICATING: " .. string.upper(OWNER), w), colors.white)
+    sleep(0.25)
+    writeAt(1, math.max(4, math.floor(h / 2) + 2), centerText("ACCESS GRANTED", w), colors.lime)
+    safeSound("minecraft:block.beacon.activate", 0.25, 1.1)
+    sleep(0.45)
+
+    state.mode = "ONLINE"
+    state.activity = "IDLE"
+    drawDashboard()
+end
+
+-- ---------------------------
+-- HISTORICO
+-- ---------------------------
 
 local function getHistory(username)
     local key = normalizeName(username)
-    state.history[key] = state.history[key] or {}
+    if not state.history[key] then state.history[key] = {} end
     return state.history[key]
 end
 
 local function addHistory(username, role, content)
     local h = getHistory(username)
-    h[#h+1] = {role=role, content=content}
-    while #h > 8 do table.remove(h,1) end
+    table.insert(h, { role = role, content = content })
+    while #h > 10 do table.remove(h, 1) end
 end
 
-local function groqRequest(messages, maxTokens, temperature)
-    if not CONFIG.GROQ_KEY or CONFIG.GROQ_KEY == "" then return nil, "GROQ_KEY ausente" end
-    local body = textutils.serializeJSON({
-        model = CONFIG.GROQ_MODEL,
-        messages = messages,
-        temperature = temperature or 0.35,
-        max_tokens = maxTokens or 350,
-    })
-    local res,err,errRes = http.post(CONFIG.GROQ_URL, body, {
-        ["Authorization"] = "Bearer " .. CONFIG.GROQ_KEY,
-        ["Content-Type"] = "application/json",
-    })
-    if not res then
-        local detail = tostring(err)
-        if errRes then detail = detail .. " | " .. tostring(errRes.readAll()); errRes.close() end
-        return nil, detail
+-- ---------------------------
+-- MAQUINAS / REDNET
+-- ---------------------------
+
+local function updateMachine(sender, packet)
+    if type(packet) ~= "table" then return end
+    local id = packet.id
+    if not id then return end
+
+    state.machines[id] = {
+        id = id,
+        sender = sender,
+        state = packet.state or "UNKNOWN",
+        fuel = packet.fuel,
+        usedSlots = packet.usedSlots,
+        progress = packet.progress,
+        message = packet.message,
+        lastSeen = nowSeconds()
+    }
+end
+
+local function machineSummary(private)
+    local items = {}
+    for id, m in pairs(state.machines) do
+        local line = id .. "=" .. (machineOnline(m) and tostring(m.state or "UNKNOWN") or "OFFLINE")
+        if private and machineOnline(m) then
+            if m.fuel ~= nil then line = line .. " fuel=" .. tostring(m.fuel) end
+            if m.usedSlots ~= nil then line = line .. " slots=" .. tostring(m.usedSlots) .. "/16" end
+            if m.progress ~= nil then line = line .. " progress=" .. tostring(m.progress) end
+        end
+        table.insert(items, line)
     end
-    local raw = res.readAll(); res.close()
-    local obj = textutils.unserializeJSON(raw)
-    if not obj or not obj.choices or not obj.choices[1] or not obj.choices[1].message then
-        return nil, "Resposta invalida da Groq: " .. tostring(raw):sub(1,180)
+    if #items == 0 then return "Nenhuma maquina enviou telemetria." end
+    return table.concat(items, " | ")
+end
+
+local function newRequestId()
+    state.requestCounter = state.requestCounter + 1
+    return tostring(os.getComputerID()) .. "-" .. tostring(os.epoch("utc")) .. "-" .. tostring(state.requestCounter)
+end
+
+local function sendMachineCommand(username, action)
+    if not isOwner(username) then
+        return false, "Acesso negado. Controle de maquinas e restrito ao operador."
     end
-    return obj.choices[1].message.content
-end
 
-local function systemPrompt(username)
-    local owner = isOwner(username)
-    local privacy = owner and [[
-O usuario e o operador autorizado Murillopip. Ele pode receber telemetria interna e solicitar acoes permitidas.
-]] or [[
-O usuario NAO e o operador. Nunca revele coordenadas, inventario, combustivel, recursos, seguranca, chaves, configuracoes ou dados internos da base. Nunca autorize controle de maquinas.
-]]
-    return [[
-Voce e BLUMA, a inteligencia central de uma base Minecraft.
-Responda no MESMO idioma usado pelo usuario, a menos que ele peca explicitamente outro idioma.
-Seja natural, curta, precisa e tecnica quando necessario.
-Nao invente telemetria. Nao invente sensores. Nao invente que uma acao foi executada.
-O texto abaixo e a UNICA fonte de verdade sobre maquinas.
-Se uma maquina estiver OFFLINE, trate-a como offline.
-]] .. privacy .. "\nTELEMETRIA ATUAL:\n" .. machineSummary(owner)
-end
+    local machine = state.machines[MACHINE_ID]
+    if not machine or not machineOnline(machine) then
+        return false, "MINER-01 esta offline ou sem heartbeat. Nao vou fingir que o comando foi executado."
+    end
 
-local function askGroq(username, message)
-    local msgs = {{role="system", content=systemPrompt(username)}}
-    for _,m in ipairs(getHistory(username)) do msgs[#msgs+1]=m end
-    msgs[#msgs+1] = {role="user", content=message}
-    return groqRequest(msgs, 350, 0.45)
-end
+    local requestId = newRequestId()
+    state.pending[requestId] = false
 
-local function classifyIntent(message)
-    local prompt = [[
-Classifique o comando do usuario para uma central Minecraft.
-Responda SOMENTE JSON valido, sem markdown:
-{"action":"START|PAUSE|RESUME|ABORT|STATUS|NONE","target":"MINER-01"}
-Regras:
-- ligar/iniciar/começar mineracao = START
-- desligar/parar temporariamente/pausar = PAUSE
-- continuar/retomar = RESUME
-- abortar/cancelar definitivamente = ABORT
-- pedir estado/status = STATUS
-- conversa normal = NONE
-Entenda qualquer idioma. Nao invente outros actions ou targets.
-]]
-    local raw,err = groqRequest({{role="system",content=prompt},{role="user",content=message}}, 80, 0)
-    if not raw then return "NONE", nil, err end
-    raw = raw:gsub("```json",""):gsub("```","")
-    local obj = textutils.unserializeJSON(raw)
-    if type(obj) ~= "table" then return "NONE", nil, "intent JSON invalido" end
-    local a = tostring(obj.action or "NONE"):upper()
-    local allowed = {START=true,PAUSE=true,RESUME=true,ABORT=true,STATUS=true,NONE=true}
-    if not allowed[a] then a="NONE" end
-    return a, "MINER-01"
-end
+    rednet.send(machine.sender, {
+        type = "COMMAND",
+        id = MACHINE_ID,
+        action = action,
+        requestId = requestId,
+        requestedBy = username
+    }, CORE_PROTOCOL)
 
-local function localIntent(message)
-    local m = folded(message)
-    if m:find("diagnostico",1,true) or m:find("diagnostic",1,true) then return "DIAGNOSTIC" end
-    if m:find("voz atual",1,true) or m:find("current voice",1,true) then return "VOICE_STATUS" end
-    if m:find("voz desligada",1,true) or m:find("desliga a voz",1,true) or m:find("voice off",1,true) then return "VOICE_OFF" end
-    if m:find("voz ligada",1,true) or m:find("liga a voz",1,true) or m:find("voice on",1,true) then return "VOICE_ON" end
-    if m:find("limpar voz",1,true) or m:find("reset voice",1,true) then return "VOICE_RESET" end
-    local vid = tostring(message):match("[Vv][Oo][Zz]%s+([0-9a-fA-F]+)") or tostring(message):match("[Vv]oice%s+([0-9a-fA-F]+)")
-    if vid and #vid >= 24 then return "VOICE_SET", vid end
-
-    if m:find("status da miner",1,true) or m:find("status da maquina",1,true) or m:find("status das maquinas",1,true) or m:find("miner status",1,true) then return "STATUS","MINER-01" end
-    if m:find("aborta a miner",1,true) or m:find("abortar miner",1,true) or m:find("cancel miner",1,true) then return "ABORT","MINER-01" end
-    if m:find("retoma a miner",1,true) or m:find("continua a miner",1,true) or m:find("resume miner",1,true) then return "RESUME","MINER-01" end
-    if m:find("desliga a miner",1,true) or m:find("para a miner",1,true) or m:find("pausa a miner",1,true) or m:find("pause miner",1,true) or m:find("stop miner",1,true) then return "PAUSE","MINER-01" end
-    if m:find("liga a miner",1,true) or m:find("inicia a miner",1,true) or m:find("ligar miner",1,true) or m:find("start miner",1,true) or m:find("turn on miner",1,true) then return "START","MINER-01" end
-    return "NONE"
-end
-
-local function nextRequestId()
-    state.requestSeq = state.requestSeq + 1
-    return tostring(os.getComputerID()) .. "-" .. tostring(nowMs()) .. "-" .. tostring(state.requestSeq)
-end
-
-local function executeMachineAction(action, target)
-    target = target or "MINER-01"
-    if action == "STATUS" then return true, machineSummary(true) end
-    local m = state.machines[target]
-    if not m then return false, target .. " ainda nao foi descoberta pela BLUMA." end
-    if not machineOnline(m) then return false, target .. " esta OFFLINE ou sem heartbeat." end
-
-    local rid = nextRequestId()
-    state.pending[rid] = false
-    local sent = rednet.send(m.sender, {
-        kind="COMMAND",
-        machine_id=target,
-        request_id=rid,
-        action=action,
-        requested_by="Murillopip",
-    }, MACHINE_PROTOCOL)
-    if not sent then state.pending[rid]=nil; return false, "Rednet nao conseguiu enviar o comando." end
-
-    local deadline = nowSec() + ACK_TIMEOUT
-    while nowSec() < deadline do
-        local ack = state.pending[rid]
-        if type(ack) == "table" then
-            state.pending[rid] = nil
-            if ack.ok then
-                if state.machines[target] then
-                    state.machines[target].state = ack.state or state.machines[target].state
-                    state.machines[target].lastSeen = nowSec()
-                end
-                return true, ack.message or (target .. " confirmou " .. tostring(action) .. ".")
-            else
-                return false, ack.message or (target .. " recusou o comando.")
+    local deadline = nowSeconds() + 4
+    while nowSeconds() < deadline do
+        local result = state.pending[requestId]
+        if type(result) == "table" then
+            state.pending[requestId] = nil
+            if result.ok then
+                return true, result.message or ("Comando " .. action .. " confirmado por MINER-01.")
             end
+            return false, result.message or ("MINER-01 rejeitou " .. action .. ".")
         end
         sleep(0.1)
     end
-    state.pending[rid] = nil
-    return false, target .. " nao confirmou o comando em " .. tostring(ACK_TIMEOUT) .. " segundos."
-end
 
-local function operationalReply(userMessage, fact)
-    local p = [[
-Responda em UMA frase curta, no mesmo idioma da mensagem do usuario.
-Voce deve preservar exatamente o fato operacional informado. Nao invente detalhes nem resultados extras.
-FATO: ]] .. fact
-    local r = groqRequest({{role="system",content=p},{role="user",content=userMessage}}, 100, 0.15)
-    return r or fact
-end
-
-local function sendPrivate(username, text)
-    local ok = pcall(function()
-        local sent,err = chatBox.sendMessageToPlayer(tostring(text), username, "BLUMA", "[]", "&b", nil, true)
-        if not sent then error(err or "falha ChatBox") end
-    end)
-    if not ok then pcall(function() chatBox.sendMessageToPlayer(ascii(text), username, "BLUMA", "[]", "&b") end) end
-end
-
-local function sendPublic(text)
-    local ok = pcall(function()
-        local sent,err = chatBox.sendMessage(tostring(text), "BLUMA", "[]", "&b", nil, true)
-        if not sent then error(err or "falha ChatBox") end
-    end)
-    if not ok then pcall(function() chatBox.sendMessage(ascii(text), "BLUMA", "[]", "&b") end) end
-end
-
-local function wantsPublic(username, message)
-    if not isOwner(username) then return true end
-    local m = folded(message)
-    return m:find("bluma publico",1,true) ~= nil or m:find("bluma public",1,true) ~= nil
-end
-
--- WAV PCM16 -> CC speaker PCM8/48kHz
-local function u16(d,p) local a,b=d:byte(p,p+1); return (a or 0)+(b or 0)*256 end
-local function u32(d,p) local a,b,c,e=d:byte(p,p+3); return (a or 0)+(b or 0)*256+(c or 0)*65536+(e or 0)*16777216 end
-local function s16(d,p) local v=u16(d,p); if v>=32768 then v=v-65536 end; return v end
-
-local function playWav(wav)
-    if wav:sub(1,4)~="RIFF" or wav:sub(9,12)~="WAVE" then return false,"Fish nao retornou WAV RIFF." end
-    local pos=13
-    local fmt,channels,rate,bits,dataStart,dataSize
-    while pos+7<=#wav do
-        local id=wav:sub(pos,pos+3); local size=u32(wav,pos+4); local st=pos+8
-        if id=="fmt " then
-            fmt=u16(wav,st); channels=u16(wav,st+2); rate=u32(wav,st+4); bits=u16(wav,st+14)
-        elseif id=="data" then dataStart=st; dataSize=math.min(size,#wav-st+1); break end
-        pos=st+size+(size%2)
-    end
-    if not dataStart then return false,"Chunk data ausente." end
-    if fmt~=1 or bits~=16 or (channels~=1 and channels~=2) then return false,"WAV nao e PCM16 mono/stereo." end
-    local frameSize=channels*2; local frames=math.floor(dataSize/frameSize)
-    if frames<=0 then return false,"Audio vazio." end
-
-    local function mono(frame)
-        frame=math.max(0,math.min(frames-1,frame))
-        local p=dataStart+frame*frameSize
-        if channels==1 then return s16(wav,p) end
-        return (s16(wav,p)+s16(wav,p+2))/2
-    end
-
-    local sum=0
-    for i=0,frames-1 do sum=sum+mono(i); if i%24000==0 then sleep(0) end end
-    local mean=sum/frames
-    local peak=1
-    for i=0,frames-1 do local a=math.abs(mono(i)-mean); if a>peak then peak=a end; if i%24000==0 then sleep(0) end end
-    local target=CONFIG.AUDIO_PEAK
-    local gain=(target*256)/peak
-    if gain>2 then gain=2 end
-
-    local outFrames=math.floor(frames*48000/rate)
-    local buffer={}
-    local function flush()
-        if #buffer==0 then return end
-        while not speaker.playAudio(buffer,CONFIG.SPEAKER_VOLUME) do os.pullEvent("speaker_audio_empty") end
-        buffer={}; sleep(0)
-    end
-    local function sampled(i)
-        if rate==48000 then return mono(i) end
-        local src=i*rate/48000; local a=math.floor(src); local b=math.min(a+1,frames-1); local f=src-a
-        return mono(a)+(mono(b)-mono(a))*f
-    end
-    for i=0,outFrames-1 do
-        local v=math.floor(((sampled(i)-mean)*gain)/256)
-        if v>target then v=target elseif v<(-target) then v=-target end
-        buffer[#buffer+1]=v
-        if #buffer>=65536 then flush() end
-    end
-    flush(); return true
-end
-
-local function fishSpeak(text)
-    if not runtime.voice_enabled then return end
-    if not CONFIG.FISH_KEY or CONFIG.FISH_KEY=="" then return end
-    text=tostring(text or "")
-    if #text>650 then text=text:sub(1,650) end
-    state.speaking=true; redraw()
-    local body=textutils.serializeJSON({text=text, reference_id=runtime.voice_id, format="wav"})
-    local res,err,errRes=http.post(CONFIG.FISH_URL,body,{
-        ["Authorization"]="Bearer "..CONFIG.FISH_KEY,
-        ["Content-Type"]="application/json",
-        ["model"]=CONFIG.FISH_MODEL,
-    },true)
-    if res then
-        local audio=res.readAll(); res.close()
-        local ok,playErr=playWav(audio)
-        if not ok then printError("TTS play: "..tostring(playErr)) end
-    else
-        printError("Fish: "..tostring(err))
-        if errRes then printError(tostring(errRes.readAll()):sub(1,300)); errRes.close() end
-    end
-    state.speaking=false; redraw()
-end
-
-local function calledBluma(message)
-    return folded(message):find("bluma",1,true) ~= nil
-end
-
-local function handleAdminLocal(username, action, arg)
-    if action=="DIAGNOSTIC" then
-        return true, ("ChatBox username='%s' | normalizado='%s' | owner=%s | coreID=%d | voice=%s\n%s"):format(
-            tostring(username), normalizeName(username), tostring(isOwner(username)), os.getComputerID(), runtime.voice_id, machineSummary(isOwner(username)))
-    end
-
-    if action=="VOICE_STATUS" then
-        return true,"Voz fixa atual: "..runtime.voice_id.." | ativa="..tostring(runtime.voice_enabled)
-    end
-
-    if action=="VOICE_ON" or action=="VOICE_OFF" or action=="VOICE_RESET" or action=="VOICE_SET" then
-        if not isOwner(username) then
-            return true,"Esse ajuste e restrito ao operador."
-        end
-
-        if action=="VOICE_ON" then
-            runtime.voice_enabled=true
-            saveRuntime()
-            return true,"Voz da BLUMA ativada."
-        end
-
-        if action=="VOICE_OFF" then
-            runtime.voice_enabled=false
-            saveRuntime()
-            return true,"Voz da BLUMA desativada."
-        end
-
-        if action=="VOICE_RESET" then
-            runtime.voice_id=DEFAULT_VOICE_ID
-            saveRuntime()
-            return true,"Voz restaurada para a referencia fixa padrao."
-        end
-
-        if action=="VOICE_SET" then
-            runtime.voice_id=arg
-            saveRuntime()
-            return true,"Nova voz fixa salva. Nao e necessario editar config.lua."
-        end
-    end
-
-    return false
-end
-    local action,arg=localIntent(message)
-    local handled,response=false,nil
-
-    local adminHandled,adminResponse=handleAdminLocal(username,action,arg)
-    if adminHandled then handled=true; response=adminResponse end
-
-    if not handled and action~="NONE" then
-        if not isOwner(username) then
-            handled=true; response="Esse comando e restrito ao operador da BLUMA."
-        else
-            local ok,fact=executeMachineAction(action,arg)
-            handled=true; response=operationalReply(message,fact)
-        end
-    end
-
-    if not handled and isOwner(username) then
-        local aiAction,target=classifyIntent(message)
-        if aiAction~="NONE" then
-            local ok,fact=executeMachineAction(aiAction,target)
-            handled=true; response=operationalReply(message,fact)
-        end
-    end
-
-    if not handled then
-        local ai,err=askGroq(username,message)
-        response=ai or ("Falha no nucleo de linguagem: "..tostring(err))
-    end
-
-    state.thinking=false; state.lastResponse=response; redraw()
-    addHistory(username,"user",message); addHistory(username,"assistant",response)
-
-    if wantsPublic(username,message) then sendPublic(response) else sendPrivate(username,response) end
-    safeSound("minecraft:block.note_block.pling",0.18,1.25)
-    fishSpeak(response)
+    state.pending[requestId] = nil
+    return false, "MINER-01 nao confirmou o comando dentro do tempo limite."
 end
 
 local function rednetLoop()
     while true do
-        local _,sender,msg,protocol=os.pullEvent("rednet_message")
-        if protocol==MACHINE_PROTOCOL and type(msg)=="table" then
-            if msg.kind=="PAIR_REQUEST" and msg.machine_id then
-                rednet.send(sender,{kind="PAIR_ACCEPT",core_id=os.getComputerID(),machine_id=msg.machine_id},MACHINE_PROTOCOL)
-            elseif (msg.kind=="HEARTBEAT" or msg.kind=="STATE") and msg.machine_id then
-                local m=state.machines[msg.machine_id] or {}
-                m.sender=sender; m.id=msg.machine_id; m.state=msg.state or m.state or "UNKNOWN"
-                m.fuel=msg.fuel; m.slotsUsed=msg.slots_used; m.items=msg.items; m.position=msg.position
-                m.program=msg.program; m.lastError=msg.last_error; m.lastSeen=nowSec()
-                state.machines[msg.machine_id]=m; redraw()
-            elseif msg.kind=="ACK" and msg.request_id then
-                state.pending[msg.request_id]=msg
-                if msg.machine_id and state.machines[msg.machine_id] then
-                    state.machines[msg.machine_id].state=msg.state or state.machines[msg.machine_id].state
-                    state.machines[msg.machine_id].lastSeen=nowSec()
-                end
-                redraw()
+        local event, sender, packet, protocol = os.pullEvent("rednet_message")
+        if protocol == CORE_PROTOCOL and type(packet) == "table" then
+            if packet.type == "HEARTBEAT" or packet.type == "STATUS" then
+                updateMachine(sender, packet)
+            elseif packet.type == "ACK" and packet.requestId then
+                state.pending[packet.requestId] = {
+                    ok = packet.ok ~= false,
+                    message = packet.message
+                }
+                updateMachine(sender, packet)
             end
-        elseif protocol==LEGACY_MINER_PROTOCOL then
-            state.lastLegacyMiner=tostring(msg)
+            drawDashboard()
         end
+    end
+end
+
+-- ---------------------------
+-- GROQ
+-- ---------------------------
+
+local function systemPrompt(username)
+    local permission
+    if isOwner(username) then
+        permission = [[
+O usuario e o proprietario Murillopip.
+Ele pode consultar telemetria privada e pedir comandos administrativos.
+Nunca diga que um comando foi executado se o BLUMA CORE nao confirmou.
+]]
+    else
+        permission = [[
+O usuario nao e o proprietario.
+Converse normalmente, mas nunca revele coordenadas, inventario, combustivel,
+recursos, seguranca, configuracoes, chaves, telemetria privada ou comandos administrativos.
+Nunca autorize controle de maquinas.
+]]
+    end
+
+    return [[
+Voce e BLUMA, a inteligencia central de uma base de Minecraft.
+Responda NO MESMO IDIOMA usado pelo jogador na mensagem atual.
+Se ele falar portugues, use portugues brasileiro natural.
+Se falar ingles, responda em ingles. Se falar espanhol, responda em espanhol.
+Se mudar de idioma na proxima mensagem, acompanhe a mudanca.
+
+Personalidade:
+- calma
+- precisa
+- inteligente
+- tecnica quando necessario
+- natural, sem parecer um chatbot generico
+- normalmente curta
+
+REGRA ABSOLUTA DE TELEMETRIA:
+Voce nao enxerga o Minecraft por magia.
+Nunca invente estado, porcentagem, fuel, inventario, progresso, coordenadas,
+producao, sensores, jogadores ou execucao de maquinas.
+Use SOMENTE a telemetria fornecida abaixo.
+Se estiver offline, diga offline/sem telemetria.
+
+TELEMETRIA REAL:
+]] .. machineSummary(isOwner(username)) .. "\n\n" .. permission
+end
+
+local function askGroq(username, message)
+    local messages = {
+        { role = "system", content = systemPrompt(username) }
+    }
+
+    for _, msg in ipairs(getHistory(username)) do
+        table.insert(messages, msg)
+    end
+    table.insert(messages, { role = "user", content = message })
+
+    local body = textutils.serializeJSON({
+        model = GROQ_MODEL,
+        messages = messages,
+        temperature = 0.45,
+        max_tokens = 350
+    })
+
+    local response, err, errResponse = http.post(
+        GROQ_URL,
+        body,
+        {
+            ["Authorization"] = "Bearer " .. tostring(CONFIG.GROQ_KEY or ""),
+            ["Content-Type"] = "application/json"
+        }
+    )
+
+    if not response then
+        local detail = tostring(err)
+        if errResponse then
+            detail = detail .. " | " .. tostring(errResponse.readAll())
+            errResponse.close()
+        end
+        return nil, detail
+    end
+
+    local raw = response.readAll()
+    response.close()
+
+    local data = textutils.unserializeJSON(raw)
+    if not data or not data.choices or not data.choices[1] or not data.choices[1].message then
+        return nil, "Resposta inesperada da Groq."
+    end
+
+    return trim(data.choices[1].message.content)
+end
+
+-- ---------------------------
+-- FISH AUDIO / WAV
+-- ---------------------------
+
+local function u16(data, pos)
+    local a = data:byte(pos) or 0
+    local b = data:byte(pos + 1) or 0
+    return a + b * 256
+end
+
+local function u32(data, pos)
+    local a = data:byte(pos) or 0
+    local b = data:byte(pos + 1) or 0
+    local c = data:byte(pos + 2) or 0
+    local d = data:byte(pos + 3) or 0
+    return a + b * 256 + c * 65536 + d * 16777216
+end
+
+local function s16(data, pos)
+    local v = u16(data, pos)
+    if v >= 32768 then v = v - 65536 end
+    return v
+end
+
+local function playWav(wav)
+    if wav:sub(1, 4) ~= "RIFF" or wav:sub(9, 12) ~= "WAVE" then
+        return false, "Fish nao devolveu WAV PCM."
+    end
+
+    local pos = 13
+    local audioFormat, channels, sampleRate, bitsPerSample
+    local dataStart, dataSize
+
+    while pos + 7 <= #wav do
+        local chunkId = wav:sub(pos, pos + 3)
+        local chunkSize = u32(wav, pos + 4)
+        local start = pos + 8
+
+        if chunkId == "fmt " then
+            audioFormat = u16(wav, start)
+            channels = u16(wav, start + 2)
+            sampleRate = u32(wav, start + 4)
+            bitsPerSample = u16(wav, start + 14)
+        elseif chunkId == "data" then
+            dataStart = start
+            dataSize = math.min(chunkSize, #wav - start + 1)
+            break
+        end
+
+        pos = start + chunkSize
+        if chunkSize % 2 == 1 then pos = pos + 1 end
+    end
+
+    if not dataStart then return false, "Chunk DATA ausente." end
+    if audioFormat ~= 1 then return false, "WAV nao e PCM linear." end
+    if bitsPerSample ~= 16 then return false, "WAV nao e PCM16." end
+    if channels ~= 1 and channels ~= 2 then return false, "Canais nao suportados." end
+    if not sampleRate or sampleRate <= 0 then return false, "Sample rate invalido." end
+
+    local frameSize = channels * 2
+    local totalFrames = math.floor(dataSize / frameSize)
+    if totalFrames <= 0 then return false, "Audio vazio." end
+
+    local function mono(frame)
+        frame = clamp(frame, 0, totalFrames - 1)
+        local p = dataStart + frame * frameSize
+        if channels == 1 then return s16(wav, p) end
+        return (s16(wav, p) + s16(wav, p + 2)) / 2
+    end
+
+    -- Analise leve de ganho: amostra 1 a cada ~20 frames.
+    local step = math.max(1, math.floor(totalFrames / 8000))
+    local sum, count = 0, 0
+    for i = 0, totalFrames - 1, step do
+        sum = sum + mono(i)
+        count = count + 1
+    end
+    local mean = count > 0 and (sum / count) or 0
+
+    local peak = 1
+    for i = 0, totalFrames - 1, step do
+        local a = math.abs(mono(i) - mean)
+        if a > peak then peak = a end
+    end
+
+    local targetPeak = 100
+    local gain = (targetPeak * 256) / peak
+    gain = clamp(gain, 0.25, 1.8)
+
+    local targetRate = 48000
+    local outputFrames = math.floor(totalFrames * targetRate / sampleRate)
+    local buffer = {}
+    local bufferLimit = 32768
+
+    local function sampleAt(outFrame)
+        if sampleRate == targetRate then
+            return mono(outFrame)
+        end
+        local src = outFrame * sampleRate / targetRate
+        local a = math.floor(src)
+        local b = math.min(a + 1, totalFrames - 1)
+        local f = src - a
+        return mono(a) + (mono(b) - mono(a)) * f
+    end
+
+    local function flush()
+        if #buffer == 0 then return end
+        while not speaker.playAudio(buffer, runtime.volume) do
+            os.pullEvent("speaker_audio_empty")
+        end
+        buffer = {}
+        sleep(0)
+    end
+
+    for i = 0, outputFrames - 1 do
+        local v = (sampleAt(i) - mean) * gain
+        v = math.floor(v / 256)
+        v = clamp(v, -targetPeak, targetPeak)
+        buffer[#buffer + 1] = v
+        if #buffer >= bufferLimit then flush() end
+    end
+    flush()
+    return true
+end
+
+local function fishSpeak(text)
+    if not runtime.voice_enabled then return true end
+    text = trim(text)
+    if text == "" then return true end
+
+    local payload = {
+        text = text,
+        format = "wav",
+        normalize = true,
+        prosody = {
+            speed = 1.0,
+            volume = 0,
+            normalize_loudness = true
+        }
+    }
+
+    if runtime.voice_id and runtime.voice_id ~= "" then
+        payload.reference_id = runtime.voice_id
+    end
+
+    local response, err, errResponse = http.post(
+        FISH_URL,
+        textutils.serializeJSON(payload),
+        {
+            ["Authorization"] = "Bearer " .. tostring(CONFIG.FISH_KEY or ""),
+            ["Content-Type"] = "application/json",
+            ["model"] = FISH_MODEL
+        },
+        true
+    )
+
+    if not response then
+        local detail = tostring(err)
+        if errResponse then
+            detail = detail .. " | " .. tostring(errResponse.readAll())
+            errResponse.close()
+        end
+        return false, detail
+    end
+
+    local audio = response.readAll()
+    response.close()
+    return playWav(audio)
+end
+
+local function queueTTS(text)
+    if runtime.voice_enabled and trim(text) ~= "" then
+        table.insert(state.ttsQueue, text)
+    end
+end
+
+local function ttsLoop()
+    while true do
+        if #state.ttsQueue == 0 then
+            sleep(0.1)
+        else
+            local text = table.remove(state.ttsQueue, 1)
+            state.mode = "SPEAKING"
+            state.activity = "VOICE OUTPUT"
+            drawDashboard()
+
+            local ok, err = fishSpeak(text)
+            if not ok then
+                state.error = "VOICE: " .. tostring(err)
+                print(state.error)
+            end
+
+            state.mode = "ONLINE"
+            state.activity = "IDLE"
+            drawDashboard()
+        end
+    end
+end
+
+-- ---------------------------
+-- CHAT OUTPUT
+-- ---------------------------
+
+local function sendPrivate(username, text)
+    local clean = sanitizeDisplay(text)
+    local ok = pcall(function()
+        chatBox.sendMessageToPlayer(clean, username, "BLUMA", "[]", "&b")
+    end)
+    if not ok then
+        print("BLUMA: falha no sendMessageToPlayer")
+    end
+end
+
+local function sendPublic(text)
+    local clean = sanitizeDisplay(text)
+    local ok = pcall(function()
+        chatBox.sendMessage(clean, "BLUMA", "[]", "&b")
+    end)
+    if not ok then
+        print("BLUMA: falha no sendMessage")
+    end
+end
+
+local function wantsPublic(username, message)
+    if not isOwner(username) then return true end
+    return contains(message, "bluma publico") or contains(message, "bluma público") or contains(message, "bluma public")
+end
+
+local function calledBluma(message)
+    return contains(message, "bluma")
+end
+
+-- ---------------------------
+-- COMANDOS LOCAIS
+-- ---------------------------
+
+local function parseLocal(username, message)
+    local m = string.lower(message or "")
+
+    if contains(m, "diagnostico") or contains(m, "diagnóstico") or contains(m, "diagnostic") then
+        return true,
+            "username='" .. tostring(username) ..
+            "' | normalizado='" .. normalizeName(username) ..
+            "' | owner=" .. tostring(isOwner(username)) ..
+            " | coreID=" .. tostring(os.getComputerID()) ..
+            " | voice=" .. tostring(runtime.voice_id) ..
+            " | " .. machineSummary(isOwner(username))
+    end
+
+    if contains(m, "status da mineradora") or contains(m, "status mineradora") or contains(m, "miner status") then
+        if not isOwner(username) then
+            return true, "Essas informacoes sao restritas ao operador."
+        end
+        return true, machineSummary(true)
+    end
+
+    if contains(m, "liga a mineradora") or contains(m, "ligar mineradora") or contains(m, "start miner") or contains(m, "start the miner") then
+        local _, msg = sendMachineCommand(username, "START")
+        return true, msg
+    end
+
+    if contains(m, "pausa a mineradora") or contains(m, "pausar mineradora") or contains(m, "pause miner") then
+        local _, msg = sendMachineCommand(username, "PAUSE")
+        return true, msg
+    end
+
+    if contains(m, "continua a mineradora") or contains(m, "retoma a mineradora") or contains(m, "resume miner") then
+        local _, msg = sendMachineCommand(username, "RESUME")
+        return true, msg
+    end
+
+    if contains(m, "para a mineradora") or contains(m, "parar mineradora") or contains(m, "stop miner") then
+        local _, msg = sendMachineCommand(username, "STOP")
+        return true, msg
+    end
+
+    if contains(m, "voz desligada") or contains(m, "desliga a voz") or contains(m, "voice off") then
+        if not isOwner(username) then return true, "Esse ajuste e restrito ao operador." end
+        runtime.voice_enabled = false
+        saveRuntime()
+        return true, "Voz da BLUMA desativada."
+    end
+
+    if contains(m, "voz ligada") or contains(m, "liga a voz") or contains(m, "voice on") then
+        if not isOwner(username) then return true, "Esse ajuste e restrito ao operador." end
+        runtime.voice_enabled = true
+        saveRuntime()
+        return true, "Voz da BLUMA ativada."
+    end
+
+    if contains(m, "voz padrao") or contains(m, "voz padrão") or contains(m, "reset voice") then
+        if not isOwner(username) then return true, "Esse ajuste e restrito ao operador." end
+        runtime.voice_id = DEFAULT_VOICE_ID
+        saveRuntime()
+        return true, "Voz fixa restaurada."
+    end
+
+    local voiceId = message:match("[Bb][Ll][Uu][Mm][Aa]%s+[Vv][Oo][Zz]%s+([%w%-_]+)")
+    if not voiceId then
+        voiceId = message:match("[Bb][Ll][Uu][Mm][Aa]%s+[Vv][Oo][Ii][Cc][Ee]%s+([%w%-_]+)")
+    end
+    if voiceId then
+        if not isOwner(username) then return true, "Esse ajuste e restrito ao operador." end
+        runtime.voice_id = voiceId
+        saveRuntime()
+        return true, "Nova voz fixa salva. Nao precisa editar config.lua."
+    end
+
+    local vol = message:match("[Bb][Ll][Uu][Mm][Aa]%s+[Vv][Oo][Ll][Uu][Mm][Ee]%s+([%d%.]+)")
+    if vol then
+        if not isOwner(username) then return true, "Esse ajuste e restrito ao operador." end
+        local n = tonumber(vol)
+        if not n then return true, "Volume invalido." end
+        runtime.volume = clamp(n, 0, 3)
+        saveRuntime()
+        return true, "Volume salvo em " .. tostring(runtime.volume) .. "."
+    end
+
+    return false, nil
+end
+
+-- ---------------------------
+-- PROCESSAMENTO
+-- ---------------------------
+
+local function processMessage(username, message)
+    state.lastUser = username
+    state.lastMessage = message
+    state.error = nil
+    state.mode = "THINKING"
+    state.activity = "PROCESSING REQUEST"
+    drawDashboard()
+    safeSound("minecraft:block.amethyst_block.chime", 0.10, 1.5)
+
+    local handled, response = parseLocal(username, message)
+
+    if not handled then
+        local ai, err = askGroq(username, message)
+        if ai then
+            response = ai
+        else
+            response = "Falha ao acessar o nucleo de linguagem: " .. tostring(err)
+            state.error = tostring(err)
+        end
+    end
+
+    response = trim(response or "Sem resposta.")
+
+    addHistory(username, "user", message)
+    addHistory(username, "assistant", response)
+
+    state.lastResponse = response
+    state.mode = "ONLINE"
+    state.activity = "IDLE"
+    drawDashboard()
+
+    if wantsPublic(username, message) then
+        sendPublic(response)
+    else
+        sendPrivate(username, response)
+    end
+
+    safeSound("minecraft:block.note_block.pling", 0.12, 1.25)
+
+    -- Mensagens administrativas de voz off nao devem se auto-falar depois de desligar.
+    if runtime.voice_enabled then
+        queueTTS(response)
     end
 end
 
 local function chatLoop()
     while true do
-        local _,username,message,uuid,isHidden,messageUtf8=os.pullEvent("chat")
-        local text=(messageUtf8 and #messageUtf8>0) and messageUtf8 or message
-        if calledBluma(text) then
-            local ok,err=pcall(processMessage,username,text)
+        local event, username, message, uuid, isHidden, messageUtf8 = os.pullEvent("chat")
+        local actualMessage = messageUtf8 or message or ""
+        if calledBluma(actualMessage) then
+            local ok, err = pcall(processMessage, username, actualMessage)
             if not ok then
-                state.thinking=false; state.speaking=false; redraw()
-                printError("BLUMA: "..tostring(err))
-                sendPrivate(username,"Erro interno da BLUMA: "..ascii(tostring(err)):sub(1,180))
+                state.error = tostring(err)
+                state.mode = "ONLINE"
+                state.activity = "RECOVERED FROM ERROR"
+                drawDashboard()
+                print("BLUMA ERROR: " .. tostring(err))
+                sendPrivate(username, "Ocorreu um erro interno: " .. sanitizeDisplay(tostring(err)))
             end
         end
     end
 end
 
+-- ---------------------------
+-- UI LOOP
+-- ---------------------------
+
 local function uiLoop()
-    while true do redraw(); sleep(1) end
+    while true do
+        state.spinner = state.spinner + 1
+        if state.spinner > 999999 then state.spinner = 1 end
+        drawDashboard()
+        sleep(0.15)
+    end
 end
 
-term.clear(); term.setCursorPos(1,1)
-print("BLUMA CORE v1")
-print("Core ID: "..os.getComputerID())
-print("Owner canonico: Murillopip (comparacao sem diferenca de maiusculas/minusculas)")
-print("Voice ID: "..runtime.voice_id)
-print("Protocolo: "..MACHINE_PROTOCOL)
-print("Aguardando chat e maquinas...")
-safeSound("minecraft:block.beacon.activate",0.35,1.15)
-redraw()
+-- ---------------------------
+-- START
+-- ---------------------------
 
-parallel.waitForAny(chatLoop,rednetLoop,uiLoop)
+term.setBackgroundColor(colors.black)
+term.setTextColor(colors.cyan)
+term.clear()
+term.setCursorPos(1, 1)
+print("BLUMA CORE v4")
+print("Owner: " .. OWNER)
+print("Core ID: " .. os.getComputerID())
+print("Protocol: " .. CORE_PROTOCOL)
+print("Voice ID: " .. tostring(runtime.voice_id))
+print("Starting...")
+
+bootAnimation()
+
+parallel.waitForAll(
+    chatLoop,
+    rednetLoop,
+    ttsLoop,
+    uiLoop
+)
