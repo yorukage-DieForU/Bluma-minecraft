@@ -1,19 +1,39 @@
+-- =========================================================
+-- BLUMA VOICE TEST V2
+-- Fish Audio -> WAV PCM -> CC:Tweaked Speaker
+-- =========================================================
+
 local speaker = peripheral.find("speaker")
 
 if not speaker then
-    error("Speaker nao encontrado")
+    error("Speaker nao encontrado.")
 end
 
+-- COLOQUE SUA KEY SOMENTE AQUI NO COMPUTADOR
 local API_KEY = "SUA_CHAVE_FISH_AQUI"
+
 local URL = "https://api.fish.audio/v1/tts"
 
-local texto = "Ola, Murillo. Eu sou a Bluma. Sistemas centrais online."
+-- Volume do Speaker.
+-- CC:Tweaked aceita de 0.0 ate 3.0.
+local SPEAKER_VOLUME = 2.5
 
-print("================================")
-print("       BLUMA VOICE TEST")
-print("================================")
+-- Pico maximo do PCM 8-bit.
+-- Nao usamos 127 para evitar estouro.
+local TARGET_PEAK = 100
+
+local texto =
+    "Ola, Murillo. Eu sou a Bluma. Sistemas centrais online. Voz sintetica operacional."
+
+print("======================================")
+print("          BLUMA VOICE V2")
+print("======================================")
 print("")
 print("Gerando voz...")
+
+-- =========================================================
+-- CHAMAR FISH AUDIO
+-- =========================================================
 
 local body = textutils.serializeJSON({
     text = texto,
@@ -33,79 +53,48 @@ local response, err, errResponse = http.post(
 
 if not response then
     print("")
-    print("ERRO HTTP")
+    print("ERRO HTTP:")
     print(tostring(err))
 
     if errResponse then
-        local erroTexto = errResponse.readAll()
-        errResponse.close()
-
         print("")
-        print("Resposta da Fish:")
-        print(erroTexto)
+        print(errResponse.readAll())
+        errResponse.close()
     end
 
     return
 end
 
-local audio = response.readAll()
+local wav = response.readAll()
 response.close()
 
-print("")
-print("Resposta recebida.")
-print("Tamanho: " .. tostring(#audio) .. " bytes")
+print("Recebido: " .. #wav .. " bytes")
 
--- =====================================================
--- DEBUG DA RESPOSTA
--- =====================================================
+-- =========================================================
+-- FUNCOES WAV
+-- =========================================================
 
-local inicio = audio:sub(1, 12)
+local function u16(data, pos)
+    local a = data:byte(pos) or 0
+    local b = data:byte(pos + 1) or 0
 
-print("Cabecalho:")
-print(textutils.serialize(inicio))
-
-if audio:sub(1, 4) ~= "RIFF" then
-    print("")
-    print("A Fish NAO retornou WAV RIFF.")
-    print("")
-    print("Primeiros caracteres:")
-    print(audio:sub(1, 300))
-    return
+    return a + b * 256
 end
 
-if audio:sub(9, 12) ~= "WAVE" then
-    print("Arquivo RIFF recebido, mas nao parece WAV.")
-    return
+local function u32(data, pos)
+    local a = data:byte(pos) or 0
+    local b = data:byte(pos + 1) or 0
+    local c = data:byte(pos + 2) or 0
+    local d = data:byte(pos + 3) or 0
+
+    return a
+        + b * 256
+        + c * 65536
+        + d * 16777216
 end
 
-print("")
-print("WAV detectado.")
-
--- =====================================================
--- LEITURA LITTLE ENDIAN
--- =====================================================
-
-local function readU16(data, pos)
-    local b1 = data:byte(pos) or 0
-    local b2 = data:byte(pos + 1) or 0
-
-    return b1 + b2 * 256
-end
-
-local function readU32(data, pos)
-    local b1 = data:byte(pos) or 0
-    local b2 = data:byte(pos + 1) or 0
-    local b3 = data:byte(pos + 2) or 0
-    local b4 = data:byte(pos + 3) or 0
-
-    return b1
-        + b2 * 256
-        + b3 * 65536
-        + b4 * 16777216
-end
-
-local function readS16(data, pos)
-    local value = readU16(data, pos)
+local function s16(data, pos)
+    local value = u16(data, pos)
 
     if value >= 32768 then
         value = value - 65536
@@ -114,9 +103,24 @@ local function readS16(data, pos)
     return value
 end
 
--- =====================================================
--- ENCONTRAR CHUNKS
--- =====================================================
+-- =========================================================
+-- VALIDAR WAV
+-- =========================================================
+
+if wav:sub(1, 4) ~= "RIFF" then
+    print("")
+    print("ERRO: resposta nao e WAV.")
+    print(wav:sub(1, 300))
+    return
+end
+
+if wav:sub(9, 12) ~= "WAVE" then
+    error("RIFF encontrado, mas nao e WAVE.")
+end
+
+-- =========================================================
+-- LER CHUNKS DO WAV
+-- =========================================================
 
 local pos = 13
 
@@ -124,32 +128,27 @@ local audioFormat
 local channels
 local sampleRate
 local bitsPerSample
-
 local dataStart
 local dataSize
 
-while pos + 7 <= #audio do
-
-    local chunkID = audio:sub(pos, pos + 3)
-    local chunkSize = readU32(audio, pos + 4)
-
-    local chunkDataStart = pos + 8
+while pos + 7 <= #wav do
+    local chunkID = wav:sub(pos, pos + 3)
+    local chunkSize = u32(wav, pos + 4)
+    local start = pos + 8
 
     if chunkID == "fmt " then
-
-        audioFormat = readU16(audio, chunkDataStart)
-        channels = readU16(audio, chunkDataStart + 2)
-        sampleRate = readU32(audio, chunkDataStart + 4)
-        bitsPerSample = readU16(audio, chunkDataStart + 14)
+        audioFormat = u16(wav, start)
+        channels = u16(wav, start + 2)
+        sampleRate = u32(wav, start + 4)
+        bitsPerSample = u16(wav, start + 14)
 
     elseif chunkID == "data" then
-
-        dataStart = chunkDataStart
-        dataSize = chunkSize
+        dataStart = start
+        dataSize = math.min(chunkSize, #wav - start + 1)
         break
     end
 
-    pos = chunkDataStart + chunkSize
+    pos = start + chunkSize
 
     if chunkSize % 2 == 1 then
         pos = pos + 1
@@ -157,27 +156,28 @@ while pos + 7 <= #audio do
 end
 
 print("")
-print("Informacoes do WAV:")
-print("Formato: " .. tostring(audioFormat))
-print("Canais: " .. tostring(channels))
-print("Sample rate: " .. tostring(sampleRate))
-print("Bits: " .. tostring(bitsPerSample))
-print("Data bytes: " .. tostring(dataSize))
+print("WAV:")
+print("Formato     : " .. tostring(audioFormat))
+print("Canais      : " .. tostring(channels))
+print("Sample rate : " .. tostring(sampleRate))
+print("Bits        : " .. tostring(bitsPerSample))
+print("Audio bytes : " .. tostring(dataSize))
+print("")
 
 if not dataStart then
-    error("Chunk de audio DATA nao encontrado")
+    error("Chunk DATA nao encontrado.")
 end
 
 if audioFormat ~= 1 then
     error(
-        "WAV nao esta em PCM linear. Formato recebido: " ..
+        "Esperava PCM linear. Formato recebido: " ..
         tostring(audioFormat)
     )
 end
 
 if bitsPerSample ~= 16 then
     error(
-        "Esperava PCM 16-bit. Recebido: " ..
+        "Esperava PCM16. Recebido: " ..
         tostring(bitsPerSample)
     )
 end
@@ -189,90 +189,213 @@ if channels ~= 1 and channels ~= 2 then
     )
 end
 
-if not sampleRate or sampleRate <= 0 then
-    error("Sample rate invalido")
-end
+-- =========================================================
+-- LEITOR DE FRAMES
+-- =========================================================
 
--- =====================================================
--- CONVERSAO PARA SPEAKER
--- =====================================================
-
-local bytesPerSample = 2
-local frameSize = bytesPerSample * channels
+local frameSize = channels * 2
 local totalFrames = math.floor(dataSize / frameSize)
 
-local TARGET_RATE = 48000
-
-local totalOutputFrames = math.floor(
-    totalFrames * TARGET_RATE / sampleRate
-)
-
-local function getMonoSample(frameIndex)
+local function readMono(frame)
+    if frame < 0 then
+        frame = 0
+    elseif frame >= totalFrames then
+        frame = totalFrames - 1
+    end
 
     local offset =
         dataStart +
-        frameIndex * frameSize
+        frame * frameSize
 
     if channels == 1 then
-        return readS16(audio, offset)
+        return s16(wav, offset)
     end
 
-    local left = readS16(audio, offset)
-    local right = readS16(audio, offset + 2)
+    local left = s16(wav, offset)
+    local right = s16(wav, offset + 2)
 
-    return math.floor((left + right) / 2)
+    return (left + right) / 2
 end
 
+-- =========================================================
+-- ANALISAR AUDIO
+-- =========================================================
+
+print("Analisando nivel do audio...")
+
+local soma = 0
+local pico = 0
+
+-- Analisa parte suficiente do sinal.
+-- Fazemos tudo aqui porque as frases sao curtas.
+for frame = 0, totalFrames - 1 do
+    local sample = readMono(frame)
+
+    soma = soma + sample
+
+    local absSample = math.abs(sample)
+
+    if absSample > pico then
+        pico = absSample
+    end
+end
+
+local media = soma / math.max(totalFrames, 1)
+
+print("Offset medio : " .. math.floor(media))
+print("Pico PCM16   : " .. math.floor(pico))
+
+if pico < 1 then
+    error("Audio recebido esta praticamente silencioso.")
+end
+
+-- =========================================================
+-- CALCULAR GANHO
+-- =========================================================
+
+-- Primeiro removemos DC offset e depois encontramos
+-- quanto podemos amplificar sem chegar perto do clipping.
+
+local picoCorrigido = 0
+
+for frame = 0, totalFrames - 1 do
+    local sample = readMono(frame) - media
+    local absSample = math.abs(sample)
+
+    if absSample > picoCorrigido then
+        picoCorrigido = absSample
+    end
+end
+
+if picoCorrigido < 1 then
+    picoCorrigido = 1
+end
+
+local ganho =
+    (TARGET_PEAK * 256) /
+    picoCorrigido
+
+-- Nao queremos amplificacao absurda de ruido.
+if ganho > 3.0 then
+    ganho = 3.0
+end
+
+print("Ganho digital: " .. string.format("%.2f", ganho))
+print("Volume speaker: " .. tostring(SPEAKER_VOLUME))
+
+-- =========================================================
+-- RESAMPLING
+-- =========================================================
+
+local TARGET_RATE = 48000
+
+local outputFrames = math.floor(
+    totalFrames *
+    TARGET_RATE /
+    sampleRate
+)
+
+local function getResampled(outputFrame)
+    -- Posicao fracionaria no audio original
+    local sourcePos =
+        outputFrame *
+        sampleRate /
+        TARGET_RATE
+
+    local frameA = math.floor(sourcePos)
+    local frameB = frameA + 1
+
+    if frameB >= totalFrames then
+        frameB = totalFrames - 1
+    end
+
+    local fraction =
+        sourcePos - frameA
+
+    local a = readMono(frameA)
+    local b = readMono(frameB)
+
+    -- interpolacao linear
+    return a + (b - a) * fraction
+end
+
+-- =========================================================
+-- CONVERSAO PCM16 -> PCM8
+-- =========================================================
+
+local function convertSample(pcm16)
+    -- remove DC offset
+    pcm16 = pcm16 - media
+
+    -- normaliza volume
+    pcm16 = pcm16 * ganho
+
+    -- PCM16 -> PCM8
+    local sample =
+        math.floor(pcm16 / 256)
+
+    -- soft limit
+    if sample > TARGET_PEAK then
+        sample = TARGET_PEAK
+
+    elseif sample < -TARGET_PEAK then
+        sample = -TARGET_PEAK
+    end
+
+    return sample
+end
+
+-- =========================================================
+-- REPRODUCAO
+-- =========================================================
+
+-- Quanto maior o buffer, menor a chance de estalo entre blocos.
+local BUFFER_SIZE = 64 * 1024
+
 local buffer = {}
-local BUFFER_SIZE = 12000
 
-local function playBuffer()
-
+local function flush()
     if #buffer == 0 then
         return
     end
 
-    while not speaker.playAudio(buffer, 1.0) do
+    while not speaker.playAudio(
+        buffer,
+        SPEAKER_VOLUME
+    ) do
         os.pullEvent("speaker_audio_empty")
     end
 
     buffer = {}
+
+    -- Evita timeout do computador.
+    sleep(0)
 end
 
 print("")
-print("Convertendo...")
-print("Falando...")
+print("BLUMA falando...")
+print("")
 
-for outputFrame = 0, totalOutputFrames - 1 do
+for i = 0, outputFrames - 1 do
+    local pcm16
 
-    local sourceFrame = math.floor(
-        outputFrame * sampleRate / TARGET_RATE
-    )
-
-    if sourceFrame >= totalFrames then
-        sourceFrame = totalFrames - 1
+    if sampleRate == TARGET_RATE then
+        -- Fish normalmente ja esta em 48 kHz.
+        -- ZERO resampling nesse caso.
+        pcm16 = readMono(i)
+    else
+        pcm16 = getResampled(i)
     end
 
-    local pcm16 = getMonoSample(sourceFrame)
-
-    local sample8 = math.floor(pcm16 / 256)
-
-    if sample8 > 127 then
-        sample8 = 127
-    end
-
-    if sample8 < -128 then
-        sample8 = -128
-    end
-
-    buffer[#buffer + 1] = sample8
+    buffer[#buffer + 1] =
+        convertSample(pcm16)
 
     if #buffer >= BUFFER_SIZE then
-        playBuffer()
+        flush()
     end
 end
 
-playBuffer()
+flush()
 
 print("")
-print("Concluido.")
+print("Reproducao concluida.")
